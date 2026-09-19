@@ -6,13 +6,27 @@ const txEl = $("transcript");
 const activityEl = $("activity");
 const connBadge = $("connBadge");
 const talkBtn = $("talk");
+const sourceSelect = $("sourceMode");
 
 const BARGE_RMS = 0.02;
+
+/*
+  Capture mode:
+
+  "meeting" — capture the audio of a shared Chrome tab (Google Meet / Teams).
+              Only the remote participants are in that stream, so the local
+              user's own voice is never captured or sent anywhere. Answers are
+              displayed as text and nothing is played into the call.
+
+  "mic"     — the original microphone voice assistant.
+*/
+let captureMode = "meeting";
 
 let ws;
 let audioCtx;
 let workletNode;
 let micStream;
+let captureStream;
 
 let nextStart = 0;
 let activeSources = [];
@@ -196,12 +210,17 @@ function addLine(role, text) {
 
   wrap.className = `bubble ${role}`;
 
+  const speaker =
+    role === "agent"
+      ? "DevOps Assistant"
+      : captureMode === "meeting"
+        ? "Meeting participant"
+        : "You";
+
   wrap.innerHTML = `
     <div class="meta">
       <span>
-        ${role === "agent"
-          ? "DevOps Assistant"
-          : "You"}
+        ${speaker}
       </span>
 
       <span>${timestamp()}</span>
@@ -411,7 +430,7 @@ function connect() {
       : "ws";
 
   ws = new WebSocket(
-    `${proto}://${location.host}/ws`
+    `${proto}://${location.host}/ws?mode=${captureMode}`
   );
 
   ws.binaryType = "arraybuffer";
@@ -423,7 +442,9 @@ function connect() {
     setConnection(true);
 
     setStatus(
-      "Live session connected. Speak now."
+      captureMode === "meeting"
+        ? "Listening to the shared meeting tab. Answers appear below."
+        : "Live session connected. Speak now."
     );
 
     setOrb("listening");
@@ -461,7 +482,16 @@ function connect() {
     if (
       typeof evt.data !== "string"
     ) {
-      playVoice(evt.data);
+
+      /*
+        Meeting mode is text-only. Never play audio back:
+        it would be picked up by the call.
+      */
+
+      if (captureMode !== "meeting") {
+        playVoice(evt.data);
+      }
+
       return;
     }
 
@@ -493,7 +523,9 @@ function connect() {
         setOrb("thinking");
 
         setStatus(
-          "Processing your request..."
+          captureMode === "meeting"
+            ? "Question heard. Preparing an answer..."
+            : "Processing your request..."
         );
 
         addLine(
@@ -508,6 +540,36 @@ function connect() {
           m.text
         );
 
+        if (captureMode === "meeting") {
+          setOrb("speaking");
+
+          setStatus(
+            "Answer ready below."
+          );
+        }
+
+      }
+
+      return;
+    }
+
+
+    /*
+      Turn finished. Close the current bubble so the next
+      question and answer start fresh ones.
+    */
+
+    if (m.type === "turn_complete") {
+
+      activeTranscriptBubble = null;
+      activeTranscriptRole = null;
+
+      if (captureMode === "meeting") {
+        setOrb("listening");
+
+        setStatus(
+          "Listening to the shared meeting tab..."
+        );
       }
 
       return;
@@ -568,10 +630,115 @@ function connect() {
 
 
 /* -------------------------------------------------------
-   MICROPHONE
+   AUDIO CAPTURE
 ------------------------------------------------------- */
 
-async function startMic() {
+/*
+  Capture the audio of a shared browser tab.
+
+  In Chrome the user must pick the "Chrome Tab" option in the picker and
+  switch on "Also share tab audio". The resulting stream contains exactly
+  what the tab plays — i.e. the remote Meet/Teams participants. The local
+  microphone is not part of it, and this function never asks for the
+  microphone, so the local user's own voice is never captured.
+*/
+
+async function getMeetingStream() {
+
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    throw new Error(
+      "This browser cannot capture tab audio. Use Chrome or Edge on desktop."
+    );
+  }
+
+
+  const stream =
+    await navigator.mediaDevices.getDisplayMedia({
+
+      /*
+        Chrome only offers the "share tab audio" checkbox when video
+        is requested too. The video track is never rendered or sent.
+      */
+      video: true,
+
+      audio: {
+
+        channelCount: 2,
+
+        /*
+          The tab stream is already clean, processed call audio.
+          Browser voice processing would only degrade it.
+        */
+        echoCancellation: false,
+
+        noiseSuppression: false,
+
+        autoGainControl: false,
+
+      },
+
+    });
+
+
+  const audioTracks =
+    stream.getAudioTracks();
+
+
+  if (!audioTracks.length) {
+
+    stream
+      .getTracks()
+      .forEach((t) => t.stop());
+
+    throw new Error(
+      "No tab audio was shared. Re-run and pick the Google Meet / Teams tab " +
+      "under \"Chrome Tab\", then turn on \"Also share tab audio\"."
+    );
+  }
+
+
+  /*
+    The user can end sharing from Chrome's own bar.
+  */
+
+  stream
+    .getTracks()
+    .forEach((track) => {
+
+      track.addEventListener(
+        "ended",
+        stopSession
+      );
+
+    });
+
+
+  return stream;
+}
+
+
+async function getMicStream() {
+
+  return navigator.mediaDevices
+    .getUserMedia({
+
+      audio: {
+
+        channelCount: 1,
+
+        echoCancellation: true,
+
+        noiseSuppression: true,
+
+        autoGainControl: true,
+
+      },
+
+    });
+}
+
+
+async function startCapture() {
 
   const AudioContextClass =
     window.AudioContext ||
@@ -616,26 +783,22 @@ async function startMic() {
 
 
   /*
-    Request microphone.
+    Request the audio source for the selected mode.
   */
 
-  micStream =
-    await navigator.mediaDevices
-      .getUserMedia({
+  if (captureMode === "meeting") {
 
-        audio: {
+    captureStream = await getMeetingStream();
 
-          channelCount: 1,
+    micStream = null;
 
-          echoCancellation: true,
+  } else {
 
-          noiseSuppression: true,
+    micStream = await getMicStream();
 
-          autoGainControl: true,
+    captureStream = micStream;
 
-        },
-
-      });
+  }
 
 
   console.log(
@@ -645,30 +808,44 @@ async function startMic() {
 
 
   const audioTrack =
-    micStream.getAudioTracks()[0];
+    captureStream.getAudioTracks()[0];
 
   if (audioTrack) {
     console.log(
-      "Microphone settings:",
+      "Capture settings:",
+      captureMode,
       audioTrack.getSettings()
     );
   }
 
 
   /*
-    Microphone → AudioWorklet
+    Capture source → AudioWorklet
   */
 
   const source =
     audioCtx.createMediaStreamSource(
-      micStream
+      captureStream
     );
 
 
   workletNode =
     new AudioWorkletNode(
       audioCtx,
-      "pcm-processor"
+      "pcm-processor",
+      {
+
+        /*
+          Tab audio is usually stereo; downmix to mono
+          before the processor resamples to 16 kHz.
+        */
+        channelCount: 1,
+
+        channelCountMode: "explicit",
+
+        channelInterpretation: "speakers",
+
+      }
     );
 
 
@@ -695,9 +872,13 @@ async function startMic() {
       If user starts speaking while
       assistant is speaking,
       stop assistant playback.
+
+      Meeting mode never plays audio, so there is
+      nothing to barge into.
     */
 
     if (
+      captureMode !== "meeting" &&
       e.data.rms >= BARGE_RMS &&
       speaking
     ) {
@@ -738,13 +919,24 @@ async function go() {
 
   started = true;
 
+  captureMode =
+    sourceSelect && sourceSelect.value === "mic"
+      ? "mic"
+      : "meeting";
+
   talkBtn.disabled = true;
+
+  if (sourceSelect) {
+    sourceSelect.disabled = true;
+  }
 
   talkBtn.textContent =
     "Initializing...";
 
   setStatus(
-    "Preparing microphone and real-time session..."
+    captureMode === "meeting"
+      ? "Pick the Google Meet / Teams tab and enable \"Also share tab audio\"..."
+      : "Preparing microphone and real-time session..."
   );
 
   setOrb("thinking");
@@ -752,7 +944,7 @@ async function go() {
 
   try {
 
-    await startMic();
+    await startCapture();
 
     connect();
 
@@ -762,8 +954,14 @@ async function go() {
 
     talkBtn.disabled = false;
 
+    if (sourceSelect) {
+      sourceSelect.disabled = false;
+    }
+
     talkBtn.textContent =
-      "🎙 Start Live Session";
+      captureMode === "meeting"
+        ? "🖥 Share meeting tab"
+        : "🎙 Start Live Session";
 
     setOrb("idle");
 
@@ -778,7 +976,9 @@ async function go() {
     ) {
 
       setStatus(
-        "Microphone permission was denied."
+        captureMode === "meeting"
+          ? "Tab sharing was cancelled or denied."
+          : "Microphone permission was denied."
       );
 
     } else if (
@@ -821,6 +1021,98 @@ async function go() {
 
 
 /* -------------------------------------------------------
+   STOP SESSION
+------------------------------------------------------- */
+
+function stopSession() {
+
+  if (!started) {
+    return;
+  }
+
+  started = false;
+
+  stopVoice();
+
+
+  if (captureStream) {
+
+    captureStream
+      .getTracks()
+      .forEach((track) => {
+
+        try {
+          track.stop();
+        } catch {}
+
+      });
+
+    captureStream = null;
+    micStream = null;
+  }
+
+
+  if (workletNode) {
+
+    try {
+      workletNode.disconnect();
+    } catch {}
+
+    workletNode = null;
+  }
+
+
+  if (audioCtx) {
+
+    audioCtx
+      .close()
+      .catch(() => {});
+
+    audioCtx = null;
+  }
+
+
+  if (ws) {
+
+    /*
+      Detach handlers first so the close does not report
+      itself as a dropped connection.
+    */
+
+    ws.onclose = null;
+    ws.onmessage = null;
+    ws.onerror = null;
+
+    try {
+      ws.close();
+    } catch {}
+
+    ws = null;
+  }
+
+
+  setConnection(false);
+
+  setOrb("idle");
+
+  setStatus(
+    "Session stopped."
+  );
+
+  talkBtn.disabled = false;
+
+  talkBtn.textContent =
+    captureMode === "meeting"
+      ? "🖥 Share meeting tab"
+      : "🎙 Start Live Session";
+
+  if (sourceSelect) {
+    sourceSelect.disabled = false;
+  }
+}
+
+
+/* -------------------------------------------------------
    START BUTTON
 ------------------------------------------------------- */
 
@@ -828,6 +1120,37 @@ talkBtn.addEventListener(
   "click",
   go
 );
+
+
+/* -------------------------------------------------------
+   CAPTURE SOURCE SELECTOR
+------------------------------------------------------- */
+
+if (sourceSelect) {
+
+  const applySourceLabel = () => {
+
+    const meeting =
+      sourceSelect.value !== "mic";
+
+    talkBtn.textContent = meeting
+      ? "🖥 Share meeting tab"
+      : "🎙 Start Live Session";
+
+    setStatus(
+      meeting
+        ? "Meeting mode: only the shared tab is heard. Your microphone is never used."
+        : "Microphone mode: the assistant hears you and replies with voice."
+    );
+  };
+
+  sourceSelect.addEventListener(
+    "change",
+    applySourceLabel
+  );
+
+  applySourceLabel();
+}
 
 
 /* -------------------------------------------------------
