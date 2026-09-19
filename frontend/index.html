@@ -980,6 +980,33 @@
     }
 
 
+    .source-select {
+      width: 100%;
+
+      padding: 12px 14px;
+
+      border-radius: 14px;
+
+      border: 1px solid var(--line, rgba(255, 255, 255, 0.14));
+
+      background: rgba(255, 255, 255, 0.04);
+
+      color: inherit;
+
+      font-size: 13px;
+      font-weight: 700;
+
+      cursor: pointer;
+    }
+
+
+    .source-select:disabled {
+      opacity: 0.55;
+
+      cursor: not-allowed;
+    }
+
+
     .btn {
       position: relative;
 
@@ -2022,16 +2049,43 @@
 
         <div class="voice-action">
 
+          <label
+            class="status-label"
+            for="sourceMode"
+          >
+            Audio source
+          </label>
+
+          <select
+            id="sourceMode"
+            class="source-select"
+          >
+
+            <option value="meeting" selected>
+              Meeting tab (Google Meet / Teams)
+            </option>
+
+            <option value="mic">
+              My microphone
+            </option>
+
+          </select>
+
           <button
             id="talk"
             class="btn"
           >
-            🎙 Start Live Session
+            🖥 Share meeting tab
           </button>
 
           <div class="helper-text">
-            Use headphones for cleaner audio and
-            more accurate voice transcription.
+            Meeting mode: in the Chrome picker choose
+            <strong>Chrome Tab</strong>, select the
+            Meet or Teams tab, and switch on
+            <strong>Also share tab audio</strong>.
+            Only that tab is heard — your microphone is
+            never used and nothing is spoken back into
+            the call.
           </div>
 
         </div>
