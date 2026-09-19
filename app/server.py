@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import ssl
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from google import genai
 from google.genai import types
 
-from app.persona import DEVOPS_SHACK_INSTRUCTION
+from app.persona import DEVOPS_SHACK_INSTRUCTION, MEETING_LISTEN_INSTRUCTION
 from app.tools import TOOL_DECLARATIONS, dispatch_tool
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,20 @@ LIVE_CONFIG = {
     "tools": [{"function_declarations": TOOL_DECLARATIONS}],
 }
 
+# Meeting-listen mode: the browser streams the shared meeting tab instead of the
+# microphone, and the assistant replies in text only so nothing is ever played
+# back into the call.
+MEETING_CONFIG = {
+    "response_modalities": ["TEXT"],
+    "system_instruction": MEETING_LISTEN_INSTRUCTION,
+    "input_audio_transcription": {},
+    "tools": [{"function_declarations": TOOL_DECLARATIONS}],
+}
+
+
+def session_config(mode: str) -> dict:
+    return MEETING_CONFIG if mode == "meeting" else LIVE_CONFIG
+
 app = FastAPI(title="DevOps Shack VoiceOps Assistant", version="1.0.0")
 app.add_middleware(
     CORSMiddleware,
@@ -62,10 +77,15 @@ def health():
 @app.websocket("/ws")
 async def voice_socket(websocket: WebSocket):
     await websocket.accept()
-    log.info("Browser connected; opening Gemini Live session (model=%s, voice=%s)", MODEL, VOICE)
+    mode = websocket.query_params.get("mode", "mic")
+    mode = "meeting" if mode == "meeting" else "mic"
+    log.info(
+        "Browser connected; opening Gemini Live session (mode=%s, model=%s, voice=%s)",
+        mode, MODEL, VOICE,
+    )
 
     try:
-        async with client.aio.live.connect(model=MODEL, config=LIVE_CONFIG) as session:
+        async with client.aio.live.connect(model=MODEL, config=session_config(mode)) as session:
             async def upstream():
                 while True:
                     message = await websocket.receive()
@@ -109,8 +129,20 @@ async def voice_socket(websocket: WebSocket):
                             if inline_data and getattr(inline_data, "data", None):
                                 await websocket.send_bytes(inline_data.data)
 
+                            # Meeting mode answers arrive as text parts, not audio.
+                            text = getattr(part, "text", None)
+                            if text:
+                                await websocket.send_text(json.dumps({
+                                    "type": "transcript",
+                                    "role": "assistant",
+                                    "text": text,
+                                }))
+
                     if getattr(server_content, "interrupted", None):
                         await websocket.send_text(json.dumps({"type": "interrupted"}))
+
+                    if getattr(server_content, "turn_complete", None):
+                        await websocket.send_text(json.dumps({"type": "turn_complete"}))
 
                 if tool_call:
                     responses = []
@@ -155,10 +187,21 @@ async def voice_socket(websocket: WebSocket):
         log.info("Browser disconnected")
     except Exception as exc:
         log.exception("Voice session failed")
+        user_message = f"{type(exc).__name__}: {exc}"
+
+        if isinstance(exc, ssl.SSLError) and "HANDSHAKE_FAILURE" in str(exc):
+            user_message = (
+                "Could not connect to Gemini Live due to TLS handshake failure. "
+                "This is usually a network policy, proxy, or firewall issue for "
+                "generativelanguage.googleapis.com. Try a different network (for "
+                "example mobile hotspot) or ask IT to allow outbound TLS/WebSocket "
+                "access to Google Generative Language endpoints."
+            )
+
         try:
             await websocket.send_text(json.dumps({
                 "type": "error",
-                "message": f"{type(exc).__name__}: {exc}",
+                "message": user_message,
             }))
         except Exception:
             pass
