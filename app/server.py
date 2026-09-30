@@ -41,13 +41,18 @@ LIVE_CONFIG = {
     "tools": [{"function_declarations": TOOL_DECLARATIONS}],
 }
 
-# Meeting-listen mode: the browser streams the shared meeting tab instead of the
-# microphone, and the assistant replies in text only so nothing is ever played
-# back into the call.
+# Meeting-listen mode: Gemini Live still returns AUDIO (supported modality),
+# while the frontend suppresses playback and shows only transcript text.
 MEETING_CONFIG = {
-    "response_modalities": ["TEXT"],
+    "response_modalities": ["AUDIO"],
     "system_instruction": MEETING_LISTEN_INSTRUCTION,
     "input_audio_transcription": {},
+    "output_audio_transcription": {},
+    "speech_config": {
+        "voice_config": {
+            "prebuilt_voice_config": {"voice_name": VOICE}
+        }
+    },
     "tools": [{"function_declarations": TOOL_DECLARATIONS}],
 }
 
