@@ -7,6 +7,7 @@ const activityEl = $("activity");
 const connBadge = $("connBadge");
 const talkBtn = $("talk");
 const sourceSelect = $("sourceMode");
+const speakToggle = $("speakToggle");
 
 const BARGE_RMS = 0.02;
 
@@ -32,6 +33,7 @@ let nextStart = 0;
 let activeSources = [];
 let speaking = false;
 let started = false;
+let speakEnabled = false;
 
 // Keep track of the currently streaming transcript bubble
 let activeTranscriptBubble = null;
@@ -317,6 +319,11 @@ function escapeHtml(text) {
 }
 
 
+function canPlayAssistantAudio() {
+  return captureMode !== "meeting" && speakEnabled;
+}
+
+
 /* -------------------------------------------------------
    ASSISTANT AUDIO PLAYBACK
 ------------------------------------------------------- */
@@ -488,7 +495,7 @@ function connect() {
         it would be picked up by the call.
       */
 
-      if (captureMode !== "meeting") {
+      if (canPlayAssistantAudio()) {
         playVoice(evt.data);
       }
 
@@ -1133,6 +1140,22 @@ if (sourceSelect) {
     const meeting =
       sourceSelect.value !== "mic";
 
+    captureMode = meeting
+      ? "meeting"
+      : "mic";
+
+    if (speakToggle) {
+      if (meeting) {
+        speakToggle.checked = false;
+        speakToggle.disabled = true;
+      } else {
+        speakToggle.disabled = false;
+        speakToggle.checked = true;
+      }
+
+      speakEnabled = speakToggle.checked;
+    }
+
     talkBtn.textContent = meeting
       ? "🖥 Share meeting tab"
       : "🎙 Start Live Session";
@@ -1150,6 +1173,25 @@ if (sourceSelect) {
   );
 
   applySourceLabel();
+}
+
+if (speakToggle) {
+  speakToggle.addEventListener(
+    "change",
+    () => {
+      speakEnabled = Boolean(speakToggle.checked);
+
+      if (!speakEnabled) {
+        stopVoice();
+
+        setStatus(
+          "Speak is off. Answers will be shown as text only."
+        );
+      }
+    }
+  );
+
+  speakEnabled = Boolean(speakToggle.checked);
 }
 
 
