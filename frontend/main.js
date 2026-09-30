@@ -457,9 +457,13 @@ function connect() {
     setOrb("listening");
 
     talkBtn.textContent =
-      "● Live session active";
+      "⏹ Stop session";
 
-    talkBtn.disabled = true;
+    talkBtn.disabled = false;
+
+    if (sourceSelect) {
+      sourceSelect.disabled = false;
+    }
   };
 
 
@@ -475,6 +479,17 @@ function connect() {
     setOrb("idle");
 
     started = false;
+
+    talkBtn.disabled = false;
+
+    talkBtn.textContent =
+      captureMode === "meeting"
+        ? "🖥 Share meeting tab"
+        : "🎙 Start Live Session";
+
+    if (sourceSelect) {
+      sourceSelect.disabled = false;
+    }
   };
 
 
@@ -921,6 +936,7 @@ async function startCapture() {
 async function go() {
 
   if (started) {
+    stopSession();
     return;
   }
 
@@ -1169,7 +1185,23 @@ if (sourceSelect) {
 
   sourceSelect.addEventListener(
     "change",
-    applySourceLabel
+    async () => {
+      const wasRunning = started;
+
+      applySourceLabel();
+
+      if (!wasRunning) {
+        return;
+      }
+
+      setStatus(
+        "Switching source and reconnecting..."
+      );
+
+      stopSession();
+
+      await go();
+    }
   );
 
   applySourceLabel();
